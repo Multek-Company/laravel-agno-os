@@ -90,6 +90,8 @@ $response = AgnoOS::forSystem()->runWorkflow(
 );
 ```
 
+Follow workflow runs the same way as agent runs: `getWorkflowRun()`, `workflowRuns()`, `cancelWorkflowRun()`, `continueWorkflowRun()` (pass `step_requirements` in `$options`) and `resumeWorkflowRun()`.
+
 Attach files you already hold in memory without writing them to disk:
 
 ```php
@@ -159,4 +161,11 @@ vendor/bin/pest
 vendor/bin/pint --test
 ```
 
-Streaming SSE is intentionally outside the initial API. Call the generic client or a dedicated streaming transport rather than buffering an AgentOS event stream through Laravel's standard HTTP response wrapper.
+Streaming SSE is intentionally outside the typed API: `resumeWorkflowRun()` buffers the event stream until the run ends. To consume events live, use the escape hatch with Guzzle's `stream` option and read the body line by line:
+
+```php
+$body = AgnoOS::forSystem()->rawRequest('POST', '/workflows/negotiation/runs', [
+    'multipart' => [['name' => 'message', 'contents' => 'Go'], ['name' => 'stream', 'contents' => 'true']],
+    'stream' => true,
+])->toPsrResponse()->getBody();
+```

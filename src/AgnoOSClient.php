@@ -215,6 +215,70 @@ class AgnoOSClient
         );
     }
 
+    public function getWorkflowRun(string $workflowId, string $runId, string $sessionId): Response
+    {
+        return $this->send(
+            'GET',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}",
+            ['session_id' => $sessionId],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $query
+     */
+    public function workflowRuns(string $workflowId, array $query = []): Response
+    {
+        return $this->send('GET', "/workflows/{$this->encode($workflowId)}/runs", $query);
+    }
+
+    public function cancelWorkflowRun(string $workflowId, string $runId): Response
+    {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/cancel",
+        );
+    }
+
+    /**
+     * Continue a paused workflow run, e.g. with `step_requirements`.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function continueWorkflowRun(
+        string $workflowId,
+        string $runId,
+        string $sessionId,
+        array $options = [],
+    ): Response {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/continue",
+            $this->form([...$options, 'session_id' => $sessionId, 'stream' => false]),
+            multipart: true,
+        );
+    }
+
+    /**
+     * Reattach to a background run's event stream. The SSE body is buffered until the run ends.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function resumeWorkflowRun(
+        string $workflowId,
+        string $runId,
+        string $sessionId,
+        ?int $lastEventIndex = null,
+        array $options = [],
+    ): Response {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/resume",
+            $this->form([...$options, 'session_id' => $sessionId, 'last_event_index' => $lastEventIndex]),
+            multipart: true,
+        );
+    }
+
     /**
      * @param  array<string, mixed>  $query
      */

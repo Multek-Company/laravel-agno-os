@@ -205,3 +205,23 @@ it('rejects in-memory files without contents or name', function (array $file) {
     'missing contents' => [['name' => 'photo.jpg']],
     'missing name' => [['contents' => 'bytes']],
 ])->throws(InvalidArgumentException::class);
+
+it('manages workflow runs', function (Closure $call, string $method, string $url, array $data) {
+    Http::fake(['agentos.test/*' => Http::response([])]);
+
+    $call(app(AgnoOSClient::class));
+
+    Http::assertSent(function (Request $request) use ($method, $url, $data): bool {
+        $sent = $request->isMultipart()
+            ? collect($request->data())->pluck('contents', 'name')->all()
+            : $request->data();
+
+        return $request->method() === $method && $request->url() === $url && $sent === $data;
+    });
+})->with([
+    'get' => [fn (AgnoOSClient $c) => $c->getWorkflowRun('deal/flow', 'run-1', 'session-1'), 'GET', 'https://agentos.test/workflows/deal%2Fflow/runs/run-1?session_id=session-1', ['session_id' => 'session-1']],
+    'list' => [fn (AgnoOSClient $c) => $c->workflowRuns('deal', ['limit' => 5]), 'GET', 'https://agentos.test/workflows/deal/runs?limit=5', ['limit' => 5]],
+    'cancel' => [fn (AgnoOSClient $c) => $c->cancelWorkflowRun('deal', 'run-1'), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/cancel', []],
+    'continue' => [fn (AgnoOSClient $c) => $c->continueWorkflowRun('deal', 'run-1', 'session-1', ['step_requirements' => [['id' => 'a']]]), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/continue', ['step_requirements' => '[{"id":"a"}]', 'session_id' => 'session-1', 'stream' => 'false']],
+    'resume' => [fn (AgnoOSClient $c) => $c->resumeWorkflowRun('deal', 'run-1', 'session-1', 3), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/resume', ['session_id' => 'session-1', 'last_event_index' => '3']],
+]);
