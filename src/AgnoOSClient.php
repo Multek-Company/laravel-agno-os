@@ -151,7 +151,7 @@ class AgnoOSClient
     /**
      * Execute an AgentOS 3 agent and request a JSON response.
      *
-     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}>  $files
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
      */
     public function runAgent(
         string $agentId,
@@ -160,23 +160,19 @@ class AgnoOSClient
         ?AgentRunOptions $options = null,
         array $files = [],
     ): Response {
-        $options ??= new AgentRunOptions;
+        return $this->run("/agents/{$this->encode($agentId)}/runs", $message, $sessionId, $options, $files);
+    }
 
-        $data = [
-            ...$options->toForm(),
-            'message' => $message,
-            'stream' => false,
-        ];
-
-        if ($sessionId !== null) {
-            $data['session_id'] = $sessionId;
-        }
-
-        $request = $this->attachFiles($this->http()->asMultipart(), $files);
-
-        return $this->complete(
-            $request->post($this->path("/agents/{$this->encode($agentId)}/runs"), $this->form($data)),
-        );
+    /**
+     * Execute an AgentOS 3 workflow and request a JSON response.
+     */
+    public function runWorkflow(
+        string $workflowId,
+        string $message,
+        ?string $sessionId = null,
+        ?AgentRunOptions $options = null,
+    ): Response {
+        return $this->run("/workflows/{$this->encode($workflowId)}/runs", $message, $sessionId, $options);
     }
 
     public function getRun(string $agentId, string $runId, string $sessionId): Response
@@ -330,11 +326,53 @@ class AgnoOSClient
     }
 
     /**
-     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}>  $files
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
+     */
+    protected function run(
+        string $uri,
+        string $message,
+        ?string $sessionId,
+        ?AgentRunOptions $options,
+        array $files = [],
+    ): Response {
+        $options ??= new AgentRunOptions;
+
+        $data = [
+            ...$options->toForm(),
+            'message' => $message,
+            'stream' => false,
+        ];
+
+        if ($sessionId !== null) {
+            $data['session_id'] = $sessionId;
+        }
+
+        $request = $this->attachFiles($this->http()->asMultipart(), $files);
+
+        return $this->complete($request->post($this->path($uri), $this->form($data)));
+    }
+
+    /**
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
      */
     protected function attachFiles(PendingRequest $request, array $files): PendingRequest
     {
         foreach ($files as $file) {
+            if (is_array($file) && ! array_key_exists('path', $file)) {
+                if (! is_string($file['contents'] ?? null) || ! is_string($file['name'] ?? null) || $file['name'] === '') {
+                    throw new InvalidArgumentException('In-memory files require string [contents] and [name] keys.');
+                }
+
+                $request = $request->attach(
+                    'files',
+                    $file['contents'],
+                    $file['name'],
+                    ['Content-Type' => $file['mime'] ?? 'application/octet-stream'],
+                );
+
+                continue;
+            }
+
             if ($file instanceof UploadedFile) {
                 $request = $request->attach(
                     'files',

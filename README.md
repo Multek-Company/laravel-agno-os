@@ -79,6 +79,25 @@ $response = AgnoOS::forUser(
 $result = $response->json();
 ```
 
+Run a workflow with the same options (`background: true` returns 202 with the run id):
+
+```php
+$response = AgnoOS::forSystem()->runWorkflow(
+    workflowId: 'negotiation',
+    message: 'Start the negotiation.',
+    sessionId: 'conversation-123',
+    options: new AgentRunOptions(background: true),
+);
+```
+
+Attach files you already hold in memory without writing them to disk:
+
+```php
+AgnoOS::forSystem()->runAgent('support', 'Describe this photo.', files: [
+    ['contents' => $bytes, 'name' => 'photo.jpg', 'mime' => 'image/jpeg'],
+]);
+```
+
 Generate a token without making a request when a frontend or another service needs the credential:
 
 ```php
@@ -88,7 +107,7 @@ $token = AgnoOS::tokens()->forUser(
 );
 ```
 
-`AgentRunOptions` models the AgentOS 3 runtime fields. Its `extra` argument accepts newly introduced form fields without waiting for a package release, but cannot override fields owned by the typed method. The client always requests non-streaming JSON in `runAgent()` and `continueRun()`.
+`AgentRunOptions` models the AgentOS 3 runtime fields. Its `extra` argument accepts newly introduced form fields without waiting for a package release, but cannot override fields owned by the typed method. The client always requests non-streaming JSON in `runAgent()`, `runWorkflow()`, and `continueRun()`.
 
 ## Extensibility
 

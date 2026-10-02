@@ -161,3 +161,47 @@ it('overrides timeouts on a cloned client only', function () {
 it('rejects timeouts below one second', function () {
     app(AgnoOSClient::class)->withTimeout(0);
 })->throws(InvalidArgumentException::class);
+
+it('runs a workflow with non-streaming multipart input', function () {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1'])]);
+
+    app(AgnoOSClient::class)->runWorkflow(
+        'deal/flow',
+        'Start',
+        sessionId: 'session-1',
+        options: new AgentRunOptions(background: true),
+    );
+
+    Http::assertSent(function (Request $request): bool {
+        $data = collect($request->data())->pluck('contents', 'name');
+
+        return $request->method() === 'POST'
+            && $request->url() === 'https://agentos.test/workflows/deal%2Fflow/runs'
+            && $data['message'] === 'Start'
+            && $data['stream'] === 'false'
+            && $data['session_id'] === 'session-1'
+            && $data['background'] === 'true';
+    });
+});
+
+it('uploads in-memory files', function () {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1'])]);
+
+    app(AgnoOSClient::class)->runAgent('assistant', 'Look', files: [
+        ['contents' => 'jpeg-bytes', 'name' => 'photo.jpg', 'mime' => 'image/jpeg'],
+    ]);
+
+    Http::assertSent(fn (Request $request): bool => collect($request->data())->contains(
+        fn (array $part): bool => $part['name'] === 'files'
+            && $part['contents'] === 'jpeg-bytes'
+            && $part['filename'] === 'photo.jpg'
+            && $part['headers']['Content-Type'] === 'image/jpeg'
+    ));
+});
+
+it('rejects in-memory files without contents or name', function (array $file) {
+    app(AgnoOSClient::class)->runAgent('assistant', 'Look', files: [$file]);
+})->with([
+    'missing contents' => [['name' => 'photo.jpg']],
+    'missing name' => [['contents' => 'bytes']],
+])->throws(InvalidArgumentException::class);
