@@ -64,6 +64,21 @@ class AgnoOSClient
         return $client;
     }
 
+    /**
+     * Override the configured request and connect timeouts for the cloned client.
+     */
+    public function withTimeout(int $seconds, ?int $connectTimeout = null): static
+    {
+        if ($seconds < 1 || ($connectTimeout !== null && $connectTimeout < 1)) {
+            throw new InvalidArgumentException('Timeouts must be at least 1 second.');
+        }
+
+        return $this->withHttpOptions(array_filter([
+            'timeout' => $seconds,
+            'connect_timeout' => $connectTimeout,
+        ], fn (?int $value): bool => $value !== null));
+    }
+
     public function tokens(): TokenFactory
     {
         return $this->tokens;

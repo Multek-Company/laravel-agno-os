@@ -142,3 +142,22 @@ it('supports AgentOS service account and security key tokens', function () {
     Http::assertSent(fn (Request $request): bool => $request->hasHeader('Authorization', 'Bearer agno_pat_example')
     );
 });
+
+it('overrides timeouts on a cloned client only', function () {
+    $sent = [];
+    Http::fake(function (Request $request, array $options) use (&$sent) {
+        $sent[] = [$options['timeout'], $options['connect_timeout']];
+
+        return Http::response([]);
+    });
+
+    $client = app(AgnoOSClient::class);
+    $client->withTimeout(90, 5)->agents();
+    $client->agents();
+
+    expect($sent)->toBe([[90, 5], [config('agno-os.http.timeout', 60), config('agno-os.http.connect_timeout', 10)]]);
+});
+
+it('rejects timeouts below one second', function () {
+    app(AgnoOSClient::class)->withTimeout(0);
+})->throws(InvalidArgumentException::class);

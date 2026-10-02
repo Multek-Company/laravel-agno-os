@@ -92,6 +92,8 @@ $token = AgnoOS::tokens()->forUser(
 
 ## Extensibility
 
+Use `withTimeout(90)` (or `withTimeout(90, connectTimeout: 5)`) to override `agno-os.http.timeout` for one call, e.g. to stay under a queued job's own timeout.
+
 The package has three layers. Use typed methods for normal application code, `extra` for future run fields, and `rawRequest()` when complete HTTP control is required:
 
 ```php
@@ -111,7 +113,7 @@ $response = $client->rawRequest('POST', '/future/endpoint', [
 ]);
 ```
 
-`rawRequest()` passes Laravel HTTP client / Guzzle options through unchanged, including `query`, `json`, `form_params`, `multipart`, `body`, `headers`, certificates, and transport settings. `withHeader()`, `withHeaders()`, `withToken()`, and `withHttpOptions()` return cloned clients, so request-specific customization does not mutate the singleton used by later calls.
+`rawRequest()` passes Laravel HTTP client / Guzzle options through unchanged, including `query`, `json`, `form_params`, `multipart`, `body`, `headers`, certificates, and transport settings. `withHeader()`, `withHeaders()`, `withToken()`, `withTimeout()`, and `withHttpOptions()` return cloned clients, so request-specific customization does not mutate the singleton used by later calls.
 
 The regular convenience API also exposes:
 
