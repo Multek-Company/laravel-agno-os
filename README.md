@@ -79,6 +79,27 @@ $response = AgnoOS::forUser(
 $result = $response->json();
 ```
 
+Run a workflow with the same options (`background: true` returns 202 with the run id):
+
+```php
+$response = AgnoOS::forSystem()->runWorkflow(
+    workflowId: 'negotiation',
+    message: 'Start the negotiation.',
+    sessionId: 'conversation-123',
+    options: new AgentRunOptions(background: true),
+);
+```
+
+Follow workflow runs the same way as agent runs: `getWorkflowRun()`, `workflowRuns()`, `cancelWorkflowRun()`, `continueWorkflowRun()` (pass `step_requirements` in `$options`) and `resumeWorkflowRun()`.
+
+Attach files you already hold in memory without writing them to disk:
+
+```php
+AgnoOS::forSystem()->runAgent('support', 'Describe this photo.', files: [
+    ['contents' => $bytes, 'name' => 'photo.jpg', 'mime' => 'image/jpeg'],
+]);
+```
+
 Generate a token without making a request when a frontend or another service needs the credential:
 
 ```php
@@ -88,9 +109,11 @@ $token = AgnoOS::tokens()->forUser(
 );
 ```
 
-`AgentRunOptions` models the AgentOS 3 runtime fields. Its `extra` argument accepts newly introduced form fields without waiting for a package release, but cannot override fields owned by the typed method. The client always requests non-streaming JSON in `runAgent()` and `continueRun()`.
+`AgentRunOptions` models the AgentOS 3 runtime fields. Its `extra` argument accepts newly introduced form fields without waiting for a package release, but cannot override fields owned by the typed method. The client always requests non-streaming JSON in `runAgent()`, `runWorkflow()`, and `continueRun()`.
 
 ## Extensibility
+
+Use `withTimeout(90)` (or `withTimeout(90, connectTimeout: 5)`) to override `agno-os.http.timeout` for one call, e.g. to stay under a queued job's own timeout.
 
 The package has three layers. Use typed methods for normal application code, `extra` for future run fields, and `rawRequest()` when complete HTTP control is required:
 
@@ -111,7 +134,7 @@ $response = $client->rawRequest('POST', '/future/endpoint', [
 ]);
 ```
 
-`rawRequest()` passes Laravel HTTP client / Guzzle options through unchanged, including `query`, `json`, `form_params`, `multipart`, `body`, `headers`, certificates, and transport settings. `withHeader()`, `withHeaders()`, `withToken()`, and `withHttpOptions()` return cloned clients, so request-specific customization does not mutate the singleton used by later calls.
+`rawRequest()` passes Laravel HTTP client / Guzzle options through unchanged, including `query`, `json`, `form_params`, `multipart`, `body`, `headers`, certificates, and transport settings. `withHeader()`, `withHeaders()`, `withToken()`, `withTimeout()`, and `withHttpOptions()` return cloned clients, so request-specific customization does not mutate the singleton used by later calls.
 
 The regular convenience API also exposes:
 
@@ -138,4 +161,11 @@ vendor/bin/pest
 vendor/bin/pint --test
 ```
 
-Streaming SSE is intentionally outside the initial API. Call the generic client or a dedicated streaming transport rather than buffering an AgentOS event stream through Laravel's standard HTTP response wrapper.
+Streaming SSE is intentionally outside the typed API: `resumeWorkflowRun()` buffers the event stream until the run ends. To consume events live, use the escape hatch with Guzzle's `stream` option and read the body line by line:
+
+```php
+$body = AgnoOS::forSystem()->rawRequest('POST', '/workflows/negotiation/runs', [
+    'multipart' => [['name' => 'message', 'contents' => 'Go'], ['name' => 'stream', 'contents' => 'true']],
+    'stream' => true,
+])->toPsrResponse()->getBody();
+```

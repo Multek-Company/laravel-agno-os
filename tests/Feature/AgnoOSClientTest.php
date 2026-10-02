@@ -142,3 +142,86 @@ it('supports AgentOS service account and security key tokens', function () {
     Http::assertSent(fn (Request $request): bool => $request->hasHeader('Authorization', 'Bearer agno_pat_example')
     );
 });
+
+it('overrides timeouts on a cloned client only', function () {
+    $sent = [];
+    Http::fake(function (Request $request, array $options) use (&$sent) {
+        $sent[] = [$options['timeout'], $options['connect_timeout']];
+
+        return Http::response([]);
+    });
+
+    $client = app(AgnoOSClient::class);
+    $client->withTimeout(90, 5)->agents();
+    $client->agents();
+
+    expect($sent)->toBe([[90, 5], [config('agno-os.http.timeout', 60), config('agno-os.http.connect_timeout', 10)]]);
+});
+
+it('rejects timeouts below one second', function () {
+    app(AgnoOSClient::class)->withTimeout(0);
+})->throws(InvalidArgumentException::class);
+
+it('runs a workflow with non-streaming multipart input', function () {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1'])]);
+
+    app(AgnoOSClient::class)->runWorkflow(
+        'deal/flow',
+        'Start',
+        sessionId: 'session-1',
+        options: new AgentRunOptions(background: true),
+    );
+
+    Http::assertSent(function (Request $request): bool {
+        $data = collect($request->data())->pluck('contents', 'name');
+
+        return $request->method() === 'POST'
+            && $request->url() === 'https://agentos.test/workflows/deal%2Fflow/runs'
+            && $data['message'] === 'Start'
+            && $data['stream'] === 'false'
+            && $data['session_id'] === 'session-1'
+            && $data['background'] === 'true';
+    });
+});
+
+it('uploads in-memory files', function () {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1'])]);
+
+    app(AgnoOSClient::class)->runAgent('assistant', 'Look', files: [
+        ['contents' => 'jpeg-bytes', 'name' => 'photo.jpg', 'mime' => 'image/jpeg'],
+    ]);
+
+    Http::assertSent(fn (Request $request): bool => collect($request->data())->contains(
+        fn (array $part): bool => $part['name'] === 'files'
+            && $part['contents'] === 'jpeg-bytes'
+            && $part['filename'] === 'photo.jpg'
+            && $part['headers']['Content-Type'] === 'image/jpeg'
+    ));
+});
+
+it('rejects in-memory files without contents or name', function (array $file) {
+    app(AgnoOSClient::class)->runAgent('assistant', 'Look', files: [$file]);
+})->with([
+    'missing contents' => [['name' => 'photo.jpg']],
+    'missing name' => [['contents' => 'bytes']],
+])->throws(InvalidArgumentException::class);
+
+it('manages workflow runs', function (Closure $call, string $method, string $url, array $data) {
+    Http::fake(['agentos.test/*' => Http::response([])]);
+
+    $call(app(AgnoOSClient::class));
+
+    Http::assertSent(function (Request $request) use ($method, $url, $data): bool {
+        $sent = $request->isMultipart()
+            ? collect($request->data())->pluck('contents', 'name')->all()
+            : $request->data();
+
+        return $request->method() === $method && $request->url() === $url && $sent === $data;
+    });
+})->with([
+    'get' => [fn (AgnoOSClient $c) => $c->getWorkflowRun('deal/flow', 'run-1', 'session-1'), 'GET', 'https://agentos.test/workflows/deal%2Fflow/runs/run-1?session_id=session-1', ['session_id' => 'session-1']],
+    'list' => [fn (AgnoOSClient $c) => $c->workflowRuns('deal', ['limit' => 5]), 'GET', 'https://agentos.test/workflows/deal/runs?limit=5', ['limit' => 5]],
+    'cancel' => [fn (AgnoOSClient $c) => $c->cancelWorkflowRun('deal', 'run-1'), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/cancel', []],
+    'continue' => [fn (AgnoOSClient $c) => $c->continueWorkflowRun('deal', 'run-1', 'session-1', ['step_requirements' => [['id' => 'a']]]), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/continue', ['step_requirements' => '[{"id":"a"}]', 'session_id' => 'session-1', 'stream' => 'false']],
+    'resume' => [fn (AgnoOSClient $c) => $c->resumeWorkflowRun('deal', 'run-1', 'session-1', 3), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/resume', ['session_id' => 'session-1', 'last_event_index' => '3']],
+]);

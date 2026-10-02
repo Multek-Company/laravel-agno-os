@@ -64,6 +64,21 @@ class AgnoOSClient
         return $client;
     }
 
+    /**
+     * Override the configured request and connect timeouts for the cloned client.
+     */
+    public function withTimeout(int $seconds, ?int $connectTimeout = null): static
+    {
+        if ($seconds < 1 || ($connectTimeout !== null && $connectTimeout < 1)) {
+            throw new InvalidArgumentException('Timeouts must be at least 1 second.');
+        }
+
+        return $this->withHttpOptions(array_filter([
+            'timeout' => $seconds,
+            'connect_timeout' => $connectTimeout,
+        ], fn (?int $value): bool => $value !== null));
+    }
+
     public function tokens(): TokenFactory
     {
         return $this->tokens;
@@ -136,7 +151,7 @@ class AgnoOSClient
     /**
      * Execute an AgentOS 3 agent and request a JSON response.
      *
-     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}>  $files
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
      */
     public function runAgent(
         string $agentId,
@@ -145,23 +160,19 @@ class AgnoOSClient
         ?AgentRunOptions $options = null,
         array $files = [],
     ): Response {
-        $options ??= new AgentRunOptions;
+        return $this->run("/agents/{$this->encode($agentId)}/runs", $message, $sessionId, $options, $files);
+    }
 
-        $data = [
-            ...$options->toForm(),
-            'message' => $message,
-            'stream' => false,
-        ];
-
-        if ($sessionId !== null) {
-            $data['session_id'] = $sessionId;
-        }
-
-        $request = $this->attachFiles($this->http()->asMultipart(), $files);
-
-        return $this->complete(
-            $request->post($this->path("/agents/{$this->encode($agentId)}/runs"), $this->form($data)),
-        );
+    /**
+     * Execute an AgentOS 3 workflow and request a JSON response.
+     */
+    public function runWorkflow(
+        string $workflowId,
+        string $message,
+        ?string $sessionId = null,
+        ?AgentRunOptions $options = null,
+    ): Response {
+        return $this->run("/workflows/{$this->encode($workflowId)}/runs", $message, $sessionId, $options);
     }
 
     public function getRun(string $agentId, string $runId, string $sessionId): Response
@@ -200,6 +211,70 @@ class AgnoOSClient
             'POST',
             "/agents/{$this->encode($agentId)}/runs/{$this->encode($runId)}/continue",
             $this->form($data),
+            multipart: true,
+        );
+    }
+
+    public function getWorkflowRun(string $workflowId, string $runId, string $sessionId): Response
+    {
+        return $this->send(
+            'GET',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}",
+            ['session_id' => $sessionId],
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $query
+     */
+    public function workflowRuns(string $workflowId, array $query = []): Response
+    {
+        return $this->send('GET', "/workflows/{$this->encode($workflowId)}/runs", $query);
+    }
+
+    public function cancelWorkflowRun(string $workflowId, string $runId): Response
+    {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/cancel",
+        );
+    }
+
+    /**
+     * Continue a paused workflow run, e.g. with `step_requirements`.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function continueWorkflowRun(
+        string $workflowId,
+        string $runId,
+        string $sessionId,
+        array $options = [],
+    ): Response {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/continue",
+            $this->form([...$options, 'session_id' => $sessionId, 'stream' => false]),
+            multipart: true,
+        );
+    }
+
+    /**
+     * Reattach to a background run's event stream. The SSE body is buffered until the run ends.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function resumeWorkflowRun(
+        string $workflowId,
+        string $runId,
+        string $sessionId,
+        ?int $lastEventIndex = null,
+        array $options = [],
+    ): Response {
+        return $this->send(
+            'POST',
+            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/resume",
+            $this->form([...$options, 'session_id' => $sessionId, 'last_event_index' => $lastEventIndex]),
             multipart: true,
         );
     }
@@ -315,11 +390,53 @@ class AgnoOSClient
     }
 
     /**
-     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}>  $files
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
+     */
+    protected function run(
+        string $uri,
+        string $message,
+        ?string $sessionId,
+        ?AgentRunOptions $options,
+        array $files = [],
+    ): Response {
+        $options ??= new AgentRunOptions;
+
+        $data = [
+            ...$options->toForm(),
+            'message' => $message,
+            'stream' => false,
+        ];
+
+        if ($sessionId !== null) {
+            $data['session_id'] = $sessionId;
+        }
+
+        $request = $this->attachFiles($this->http()->asMultipart(), $files);
+
+        return $this->complete($request->post($this->path($uri), $this->form($data)));
+    }
+
+    /**
+     * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
      */
     protected function attachFiles(PendingRequest $request, array $files): PendingRequest
     {
         foreach ($files as $file) {
+            if (is_array($file) && ! array_key_exists('path', $file)) {
+                if (! is_string($file['contents'] ?? null) || ! is_string($file['name'] ?? null) || $file['name'] === '') {
+                    throw new InvalidArgumentException('In-memory files require string [contents] and [name] keys.');
+                }
+
+                $request = $request->attach(
+                    'files',
+                    $file['contents'],
+                    $file['name'],
+                    ['Content-Type' => $file['mime'] ?? 'application/octet-stream'],
+                );
+
+                continue;
+            }
+
             if ($file instanceof UploadedFile) {
                 $request = $request->attach(
                     'files',
