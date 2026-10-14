@@ -8,6 +8,7 @@ use Illuminate\Http\Client\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use Multek\AgnoOS\AgnoOSClient;
+use Multek\AgnoOS\Exceptions\AgentRunFailed;
 use Multek\AgnoOS\Runs\AgentRunOptions;
 
 it('runs an agent with a scoped user token and non-streaming multipart input', function () {
@@ -225,3 +226,41 @@ it('manages workflow runs', function (Closure $call, string $method, string $url
     'continue' => [fn (AgnoOSClient $c) => $c->continueWorkflowRun('deal', 'run-1', 'session-1', ['step_requirements' => [['id' => 'a']]]), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/continue', ['step_requirements' => '[{"id":"a"}]', 'session_id' => 'session-1', 'stream' => 'false']],
     'resume' => [fn (AgnoOSClient $c) => $c->resumeWorkflowRun('deal', 'run-1', 'session-1', 3), 'POST', 'https://agentos.test/workflows/deal/runs/run-1/resume', ['session_id' => 'session-1', 'last_event_index' => '3']],
 ]);
+
+it('throws AgentRunFailed when a run returns 200 with a failed status', function (string $status) {
+    Http::fake(['agentos.test/*' => Http::response([
+        'run_id' => 'run-1',
+        'status' => $status,
+        'content' => 'Error code: 400 - credit balance is too low',
+    ])]);
+
+    try {
+        app(AgnoOSClient::class)->runAgent('assistant', 'Hello');
+        test()->fail('Expected AgentRunFailed.');
+    } catch (AgentRunFailed $e) {
+        expect($e->status)->toBe($status)
+            ->and($e->runId)->toBe('run-1')
+            ->and($e->uri)->toBe('/agents/assistant/runs')
+            ->and($e->content)->toContain('credit balance');
+    }
+})->with(['ERROR', 'CANCELLED']);
+
+it('throws AgentRunFailed for failed workflow runs and returns completed runs', function () {
+    Http::fake([
+        'agentos.test/workflows/*' => Http::response(['run_id' => 'w-1', 'status' => 'ERROR', 'content' => 'boom']),
+        'agentos.test/agents/*' => Http::response(['run_id' => 'run-1', 'status' => 'COMPLETED', 'content' => 'Hi']),
+    ]);
+
+    expect(app(AgnoOSClient::class)->runAgent('assistant', 'Hello')->json('content'))->toBe('Hi');
+    app(AgnoOSClient::class)->runWorkflow('deal', 'Hello');
+})->throws(AgentRunFailed::class);
+
+it('throws AgentRunFailed when continuing or resuming a run fails', function (Closure $call) {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1', 'status' => 'ERROR', 'content' => 'boom'])]);
+
+    $call(app(AgnoOSClient::class));
+})->with([
+    'continueRun' => [fn (AgnoOSClient $c) => $c->continueRun('assistant', 'run-1', 'session-1')],
+    'continueWorkflowRun' => [fn (AgnoOSClient $c) => $c->continueWorkflowRun('deal', 'run-1', 'session-1')],
+    'resumeWorkflowRun' => [fn (AgnoOSClient $c) => $c->resumeWorkflowRun('deal', 'run-1', 'session-1')],
+])->throws(AgentRunFailed::class);

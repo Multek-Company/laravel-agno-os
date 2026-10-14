@@ -111,6 +111,8 @@ $token = AgnoOS::tokens()->forUser(
 
 `AgentRunOptions` models the AgentOS 3 runtime fields. Its `extra` argument accepts newly introduced form fields without waiting for a package release, but cannot override fields owned by the typed method. The client always requests non-streaming JSON in `runAgent()`, `runWorkflow()`, and `continueRun()`.
 
+AgentOS answers failed runs with HTTP 200 and `status: "ERROR"` or `"CANCELLED"`, putting the raw provider error in `content`. `runAgent()`, `runWorkflow()`, `continueRun()`, `continueWorkflowRun()` and `resumeWorkflowRun()` throw `Multek\AgnoOS\Exceptions\AgentRunFailed` in that case, so the error text never reaches end users as a reply. The exception exposes `uri`, `runId`, `status`, `content` (for logs only) and `response`. HTTP-level failures still throw `RequestException` as before.
+
 ## Extensibility
 
 Use `withTimeout(90)` (or `withTimeout(90, connectTimeout: 5)`) to override `agno-os.http.timeout` for one call, e.g. to stay under a queued job's own timeout.
