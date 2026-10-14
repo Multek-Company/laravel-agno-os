@@ -254,3 +254,13 @@ it('throws AgentRunFailed for failed workflow runs and returns completed runs', 
     expect(app(AgnoOSClient::class)->runAgent('assistant', 'Hello')->json('content'))->toBe('Hi');
     app(AgnoOSClient::class)->runWorkflow('deal', 'Hello');
 })->throws(AgentRunFailed::class);
+
+it('throws AgentRunFailed when continuing or resuming a run fails', function (Closure $call) {
+    Http::fake(['agentos.test/*' => Http::response(['run_id' => 'run-1', 'status' => 'ERROR', 'content' => 'boom'])]);
+
+    $call(app(AgnoOSClient::class));
+})->with([
+    'continueRun' => [fn (AgnoOSClient $c) => $c->continueRun('assistant', 'run-1', 'session-1')],
+    'continueWorkflowRun' => [fn (AgnoOSClient $c) => $c->continueWorkflowRun('deal', 'run-1', 'session-1')],
+    'resumeWorkflowRun' => [fn (AgnoOSClient $c) => $c->resumeWorkflowRun('deal', 'run-1', 'session-1')],
+])->throws(AgentRunFailed::class);

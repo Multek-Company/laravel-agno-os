@@ -208,12 +208,9 @@ class AgnoOSClient
             'stream' => false,
         ];
 
-        return $this->send(
-            'POST',
-            "/agents/{$this->encode($agentId)}/runs/{$this->encode($runId)}/continue",
-            $this->form($data),
-            multipart: true,
-        );
+        $uri = "/agents/{$this->encode($agentId)}/runs/{$this->encode($runId)}/continue";
+
+        return $this->ensureRunSucceeded($uri, $this->send('POST', $uri, $this->form($data), multipart: true));
     }
 
     public function getWorkflowRun(string $workflowId, string $runId, string $sessionId): Response
@@ -252,12 +249,9 @@ class AgnoOSClient
         string $sessionId,
         array $options = [],
     ): Response {
-        return $this->send(
-            'POST',
-            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/continue",
-            $this->form([...$options, 'session_id' => $sessionId, 'stream' => false]),
-            multipart: true,
-        );
+        $uri = "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/continue";
+
+        return $this->ensureRunSucceeded($uri, $this->send('POST', $uri, $this->form([...$options, 'session_id' => $sessionId, 'stream' => false]), multipart: true));
     }
 
     /**
@@ -272,12 +266,9 @@ class AgnoOSClient
         ?int $lastEventIndex = null,
         array $options = [],
     ): Response {
-        return $this->send(
-            'POST',
-            "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/resume",
-            $this->form([...$options, 'session_id' => $sessionId, 'last_event_index' => $lastEventIndex]),
-            multipart: true,
-        );
+        $uri = "/workflows/{$this->encode($workflowId)}/runs/{$this->encode($runId)}/resume";
+
+        return $this->ensureRunSucceeded($uri, $this->send('POST', $uri, $this->form([...$options, 'session_id' => $sessionId, 'last_event_index' => $lastEventIndex]), multipart: true));
     }
 
     /**
@@ -414,7 +405,14 @@ class AgnoOSClient
 
         $request = $this->attachFiles($this->http()->asMultipart(), $files);
 
-        $response = $this->complete($request->post($this->path($uri), $this->form($data)));
+        return $this->ensureRunSucceeded($uri, $this->complete($request->post($this->path($uri), $this->form($data))));
+    }
+
+    /**
+     * AgentOS answers failed runs with HTTP 200, so the run status must be checked separately.
+     */
+    protected function ensureRunSucceeded(string $uri, Response $response): Response
+    {
         $status = strtoupper((string) $response->json('status'));
 
         if (in_array($status, ['ERROR', 'CANCELLED'], true)) {
