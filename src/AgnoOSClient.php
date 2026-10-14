@@ -12,6 +12,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
 use InvalidArgumentException;
 use Multek\AgnoOS\Auth\TokenFactory;
+use Multek\AgnoOS\Exceptions\AgentRunFailed;
 use Multek\AgnoOS\Runs\AgentRunOptions;
 use RuntimeException;
 
@@ -413,7 +414,14 @@ class AgnoOSClient
 
         $request = $this->attachFiles($this->http()->asMultipart(), $files);
 
-        return $this->complete($request->post($this->path($uri), $this->form($data)));
+        $response = $this->complete($request->post($this->path($uri), $this->form($data)));
+        $status = strtoupper((string) $response->json('status'));
+
+        if (in_array($status, ['ERROR', 'CANCELLED'], true)) {
+            throw new AgentRunFailed($uri, $response->json('run_id'), $status, $response->json('content'), $response);
+        }
+
+        return $response;
     }
 
     /**
