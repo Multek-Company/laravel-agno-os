@@ -112,6 +112,80 @@ it('streams a background run and returns the final content, not the deltas', fun
         && collect($request->data())->where('name', 'files')->count() === 1);
 });
 
+it('streams with Guzzle stream mode and a read timeout below the idle timeout', function () {
+    $seen = [];
+
+    Http::fake(function (Request $request, array $options) use (&$seen) {
+        $seen[] = ['stream' => $options['stream'] ?? null, 'read_timeout' => $options['read_timeout'] ?? null];
+
+        return sseResponse([sseFrame('RunCompleted', ['run_id' => 'run-1', 'content' => 'Done'])]);
+    });
+
+    $client = app(AgnoOSClient::class);
+    $client->streamAgentRun('assistant', 'Hi', 'session-1', idleTimeout: 120);
+    $client->resumeAgentRun('assistant', 'run-1', 'session-1', idleTimeout: 3);
+
+    expect($seen)->toBe([
+        ['stream' => true, 'read_timeout' => 5],
+        ['stream' => true, 'read_timeout' => 3],
+    ]);
+});
+
+it('treats keepalives as liveness while a queued run has no run_id yet', function () {
+    // AgentOS holds the run PENDING until a concurrency slot frees, sending only keepalives.
+    Http::fake(['agentos.test/*' => sseResponse([
+        quietRead(15),
+        ": keepalive\n\n",
+        quietRead(15),
+        ": keepalive\n\n",
+        quietRead(15),
+        ": keepalive\n\n",
+        sseFrame('RunStarted', ['run_id' => 'run-1']),
+        sseFrame('RunCompleted', ['run_id' => 'run-1', 'content' => 'Done']),
+    ])]);
+
+    $started = [];
+
+    $response = app(AgnoOSClient::class)->streamAgentRun(
+        'assistant',
+        'Hi',
+        'session-1',
+        onRunStarted: function (string $runId) use (&$started): void {
+            $started[] = $runId;
+        },
+        idleTimeout: 20,
+    );
+
+    expect($response->json('content'))->toBe('Done')
+        ->and($started)->toBe(['run-1']);
+});
+
+it('throws AgentRunWentSilent without a run_id when the socket is fully quiet', function () {
+    Http::fake(['agentos.test/*' => sseResponse([quietRead(15), quietRead(15)])]);
+
+    try {
+        app(AgnoOSClient::class)->streamAgentRun('assistant', 'Hi', 'session-1', idleTimeout: 20);
+
+        $this->fail('Expected AgentRunWentSilent.');
+    } catch (AgentRunWentSilent $e) {
+        expect($e->runId)->toBeNull();
+    }
+});
+
+it('cancels a run with its session when given one', function () {
+    Http::fake(['agentos.test/*' => Http::response([])]);
+
+    $client = app(AgnoOSClient::class);
+    $client->cancelRun('assistant', 'run-1', 'session-1');
+    $client->cancelRun('assistant', 'run-2');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && $request->url() === 'https://agentos.test/agents/assistant/runs/run-1/cancel?session_id=session-1');
+
+    Http::assertSent(fn (Request $request): bool => $request->method() === 'POST'
+        && $request->url() === 'https://agentos.test/agents/assistant/runs/run-2/cancel');
+});
+
 it('keeps waiting while events arrive within the idle timeout', function () {
     Http::fake(['agentos.test/*' => sseResponse([
         sseFrame('RunStarted', ['run_id' => 'run-1']),

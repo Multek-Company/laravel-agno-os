@@ -39,8 +39,6 @@ class AgnoOSClient
         'RunCancelled' => 'CANCELLED',
     ];
 
-    protected const FINISHED_RUN_STATUSES = ['COMPLETED', 'PAUSED', 'ERROR', 'CANCELLED'];
-
     public function __construct(
         protected Repository $config,
         protected TokenFactory $tokens,
@@ -192,12 +190,14 @@ class AgnoOSClient
      *
      * The run survives a dropped connection, so a retried job can reattach with
      * resumeAgentRun() instead of starting a second run. $onRunStarted receives
-     * the run id once, as soon as AgentOS reports it (about 1 s in).
+     * the run id once, as soon as AgentOS reports it: about 1 s in, or once the
+     * run gets an execution slot when AgentOS is at its concurrency limit.
      *
      * Returns the final run, built from the RunCompleted (or RunPaused) event,
      * never from the RunContent deltas. Throws AgentRunFailed when the run ends
      * as ERROR or CANCELLED, AgentRunWentSilent after $idleTimeout seconds with
-     * no event, and AgentRunStreamFailed when the stream breaks before the end.
+     * no event (keepalives count only until the run id is known), and
+     * AgentRunStreamFailed when the stream breaks before the end.
      *
      * @param  (callable(string): mixed)|null  $onRunStarted
      * @param  list<UploadedFile|string|array{path: string, name?: string, mime?: string}|array{contents: string, name: string, mime?: string}>  $files
@@ -250,11 +250,15 @@ class AgnoOSClient
         );
     }
 
-    public function cancelRun(string $agentId, string $runId): Response
+    /**
+     * With user isolation on, AgentOS requires the run's session for non-admin tokens.
+     */
+    public function cancelRun(string $agentId, string $runId, ?string $sessionId = null): Response
     {
-        return $this->send(
+        return $this->rawRequest(
             'POST',
             "/agents/{$this->encode($agentId)}/runs/{$this->encode($runId)}/cancel",
+            $sessionId === null ? [] : ['query' => ['session_id' => $sessionId]],
         );
     }
 
@@ -600,7 +604,14 @@ class AgnoOSClient
                     $buffer = substr($buffer, $end + 2);
 
                     // Keepalive comments are not events: a dead run still gets heartbeats on resume.
+                    // Before the run_id is known they are the only sign of life, though: AgentOS
+                    // holds a run PENDING while it waits for a concurrency slot, and giving up
+                    // without a run_id to cancel would make the retry start a duplicate run.
                     if ($frame === null) {
+                        if ($runId === null) {
+                            $lastEventAt = $this->now();
+                        }
+
                         continue;
                     }
 
@@ -673,7 +684,7 @@ class AgnoOSClient
                 $run = null;
             }
 
-            if ($run?->successful() && in_array(strtoupper((string) $run->json('status')), self::FINISHED_RUN_STATUSES, true)) {
+            if ($run?->successful() && in_array(strtoupper((string) $run->json('status')), self::TERMINAL_RUN_EVENTS, true)) {
                 return $this->ensureRunSucceeded($uri, $run);
             }
         }
