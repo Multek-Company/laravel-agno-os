@@ -113,6 +113,85 @@ $token = AgnoOS::tokens()->forUser(
 
 AgentOS answers failed runs with HTTP 200 and `status: "ERROR"` or `"CANCELLED"`, putting the raw provider error in `content`. `runAgent()`, `runWorkflow()`, `continueRun()`, `continueWorkflowRun()` and `resumeWorkflowRun()` throw `Multek\AgnoOS\Exceptions\AgentRunFailed` in that case, so the error text never reaches end users as a reply. The exception exposes `uri`, `runId`, `status`, `content` (for logs only) and `response`. HTTP-level failures still throw `RequestException` as before.
 
+## Streaming runs with resume (queued jobs)
+
+`runAgent()` blocks until the run ends. If your HTTP timeout or the job's own timeout fires first, AgentOS keeps running the agent, but you never learn its `run_id`. A retry can then only post the message again, which starts a second run on the same session: duplicated side effects, and the turn is paid twice.
+
+`streamAgentRun()` starts the run with `stream=true` and `background=true`. In that mode the run lives in a detached AgentOS task that survives a dropped connection. The `run_id` arrives in the first event, usually about 1 s in, and `onRunStarted` receives it once. Store it, and on a retry reattach with `resumeAgentRun()` instead of starting over:
+
+```php
+use Illuminate\Support\Facades\Cache;
+use Multek\AgnoOS\Exceptions\AgentRunFailed;
+use Multek\AgnoOS\Exceptions\AgentRunStreamFailed;
+use Multek\AgnoOS\Facades\AgnoOS;
+use Throwable;
+
+public function handle(): void
+{
+    $client = AgnoOS::forSystem(scopes: ['agents:intake:run', 'agents:intake:read']);
+    $key = "intake-run:{$this->batchId}";
+    $runId = Cache::get($key);
+
+    try {
+        $run = $runId === null
+            ? $client->streamAgentRun(
+                'intake',
+                $this->message,
+                $this->sessionId,
+                onRunStarted: fn (string $runId) => Cache::put($key, $runId, now()->addHour()),
+                idleTimeout: 120,
+            )
+            : $client->resumeAgentRun('intake', $runId, $this->sessionId, idleTimeout: 120);
+    } catch (AgentRunFailed $e) {
+        // The run ended as ERROR or CANCELLED: the retry must start a fresh run, not resume this one.
+        Cache::forget($key);
+
+        throw $e;
+    } catch (AgentRunStreamFailed $e) {
+        // AgentRunWentSilent included: the run is dead or unreachable. Forget it first, then
+        // cancel it best-effort so it cannot finish later, and let the retry start a fresh run.
+        Cache::forget($key);
+
+        if ($e->runId !== null) {
+            try {
+                $client->cancelRun('intake', $e->runId, $this->sessionId);
+            } catch (Throwable $cancelFailed) {
+                report($cancelFailed);
+            }
+        }
+
+        throw $e;
+    }
+
+    Cache::forget($key);
+
+    $reply = $run->json('content');
+}
+```
+
+Both methods return the final run as a `Response` shaped like `runAgent()`'s (`run_id`, `session_id`, `status`, `content`, `metrics`, ...), and both apply the same status check: a run that ends as `ERROR` or `CANCELLED` throws `AgentRunFailed`, while a `PAUSED` run is returned.
+
+- The final `content` comes from the `RunCompleted` event, which carries the stored run's content after the agent's post-hooks. It never comes from the `RunContent` deltas: Agno streams every assistant text of a tool-calling turn into the deltas, pre-tool narration included.
+- `idleTimeout` is the longest gap allowed between two run events. Once the `run_id` is known, keepalive comments do not count, because an AgentOS instance that died leaves its run `RUNNING` forever, and a resume of that run only receives heartbeats. After the gap, `AgentRunWentSilent` is thrown with the `runId`.
+- Before the `run_id` is known, keepalives do count. AgentOS caps concurrent background runs (`AGNO_BACKGROUND_MAX_CONCURRENCY`, 32 per process by default) and holds the extra runs `PENDING`, sending only keepalives and no `run_id`, until a slot frees. Giving up there would leave a queued run nobody can cancel, and the retry would start a duplicate. If the job's own timeout fires during that wait, the same duplicate happens, so keep the job timeout above the longest slot wait you expect, or raise the AgentOS limit.
+- Pass the session to `cancelRun()`: with `user_isolation=True`, AgentOS rejects a cancel without `session_id` for any non-admin token.
+- `AgentRunStreamFailed` (the parent of `AgentRunWentSilent`) means the stream ended before the run did: AgentOS sent an `error` frame, or the connection closed early. Both exceptions carry `runId` and `lastEventIndex`. If the stream closes without a final event, the client first tries `getRun()`, which needs the `agents:<id>:read` scope; with the run scope alone, that lookup is skipped and the exception is thrown.
+- `resumeAgentRun()` accepts the `lastEventIndex` of the last event you processed, and AgentOS replays only the events after it. Leave it `null` to replay everything still buffered: the result is the same final run.
+- Each socket read blocks for at most 5 seconds (Guzzle's `read_timeout`), so the configured `agno-os.http.timeout` only bounds the wait for the response headers, not the length of the run.
+
+With more than one AgentOS instance, each instance buffers run events in its own memory by default. A resume that lands on another instance then returns at once with 0 events, and this client throws `AgentRunStreamFailed`. Share the buffer through Redis in AgentOS:
+
+```python
+from redis.asyncio import Redis
+from agno.os.event_streams.redis import RedisEventStream
+
+agent_os = AgentOS(
+    id="my-agent-os",
+    agents=[assistant],
+    event_stream=RedisEventStream(Redis.from_url("redis://redis:6379/0")),
+)
+```
+
 ## Extensibility
 
 Use `withTimeout(90)` (or `withTimeout(90, connectTimeout: 5)`) to override `agno-os.http.timeout` for one call, e.g. to stay under a queued job's own timeout.
@@ -146,7 +225,7 @@ AgnoOS::agents();
 AgnoOS::sessions(['user_id' => '42']);
 AgnoOS::getRun('support', $runId, $sessionId);
 AgnoOS::continueRun('support', $runId, $sessionId, ['input' => 'Go deeper']);
-AgnoOS::cancelRun('support', $runId);
+AgnoOS::cancelRun('support', $runId, $sessionId);
 AgnoOS::request('GET', '/teams');
 ```
 
@@ -163,7 +242,7 @@ vendor/bin/pest
 vendor/bin/pint --test
 ```
 
-Streaming SSE is intentionally outside the typed API: `resumeWorkflowRun()` buffers the event stream until the run ends. To consume events live, use the escape hatch with Guzzle's `stream` option and read the body line by line:
+Agent runs stream through `streamAgentRun()` and `resumeAgentRun()` (see above). For workflows, `resumeWorkflowRun()` still buffers the event stream until the run ends. To consume other event streams live, use the escape hatch with Guzzle's `stream` option and read the body line by line:
 
 ```php
 $body = AgnoOS::forSystem()->rawRequest('POST', '/workflows/negotiation/runs', [
