@@ -22,6 +22,8 @@ use Multek\AgnoOS\AgnoOSClient;
  * @method static \Illuminate\Http\Client\Response config()
  * @method static \Illuminate\Http\Client\Response agents()
  * @method static \Illuminate\Http\Client\Response runAgent(string $agentId, string $message, ?string $sessionId = null, ?\Multek\AgnoOS\Runs\AgentRunOptions $options = null, array $files = [])
+ * @method static \Illuminate\Http\Client\Response streamAgentRun(string $agentId, string $message, string $sessionId, ?callable $onRunStarted = null, int $idleTimeout = 120, array $files = [], ?\Multek\AgnoOS\Runs\AgentRunOptions $options = null)
+ * @method static \Illuminate\Http\Client\Response resumeAgentRun(string $agentId, string $runId, string $sessionId, ?int $lastEventIndex = null, int $idleTimeout = 120)
  * @method static \Illuminate\Http\Client\Response runWorkflow(string $workflowId, string $message, ?string $sessionId = null, ?\Multek\AgnoOS\Runs\AgentRunOptions $options = null)
  * @method static \Illuminate\Http\Client\Response getRun(string $agentId, string $runId, string $sessionId)
  * @method static \Illuminate\Http\Client\Response cancelRun(string $agentId, string $runId)
